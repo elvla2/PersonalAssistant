@@ -1,0 +1,66 @@
+name: Build Desktop Application
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Standalone Next.js App
+        env:
+          DESKTOP_MODE: 'true'
+          NEXT_PUBLIC_DESKTOP_MODE: 'true'
+        run: |
+          npm run build
+          npm run prepare:standalone
+
+      - name: Package Windows Desktop App
+        if: runner.os == 'Windows'
+        run: npx electron-builder --win
+
+      - name: Package macOS Desktop App
+        if: runner.os == 'macOS'
+        run: npx electron-builder --mac
+
+      - name: Upload Windows Installers
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: personal-assistant-windows
+          path: |
+            dist-desktop/*.exe
+            dist-desktop/*.blockmap
+          if-no-files-found: error
+
+      - name: Upload macOS Installers
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: personal-assistant-macos
+          path: |
+            dist-desktop/*.dmg
+            dist-desktop/*.zip
+            dist-desktop/*.blockmap
+          if-no-files-found: error

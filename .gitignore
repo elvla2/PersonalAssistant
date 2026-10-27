@@ -1,0 +1,45 @@
+# dependencies
+/node_modules
+/.pnp
+.pnp.js
+.yarn/cache
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production & desktop builds
+/build
+/dist-desktop/
+/dist/
+
+# misc
+.DS_Store
+*.pem
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# local env files (never commit secrets)
+.env
+.env.*
+!.env.example
+
+# local SQLite & WhatsApp session data
+/.local_db/
+/.whatsapp_auth/
+/data/
+/backups/
+/scratch/
+update-config.json
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts

@@ -1,0 +1,80 @@
+name: Build & Release Desktop Apps
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps
+
+      - name: Build Next.js (Desktop Mode)
+        env:
+          DESKTOP_MODE: 'true'
+          NEXT_PUBLIC_DESKTOP_MODE: 'true'
+        run: npx next build
+
+      - name: Prepare standalone distribution
+        run: node scripts/prepare_standalone.mjs
+
+      - name: Package Desktop App (macOS)
+        if: runner.os == 'macOS'
+        run: npx electron-builder --mac --publish never
+
+      - name: Package Desktop App (Windows)
+        if: runner.os == 'Windows'
+        run: npx electron-builder --win --publish never
+
+      - name: Upload Artifacts to Actions Run
+        uses: actions/upload-artifact@v4
+        with:
+          name: personal-assistant-${{ matrix.os }}
+          path: |
+            dist-desktop/*.dmg
+            dist-desktop/*.zip
+            dist-desktop/*.exe
+            dist-desktop/*.blockmap
+            dist-desktop/latest*.yml
+          if-no-files-found: warn
+
+      - name: Publish to GitHub Release
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref_name != 'main' && github.ref_name || 'v1.0.2' }}
+          name: Release ${{ github.ref_name != 'main' && github.ref_name || 'v1.0.2' }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            dist-desktop/*.dmg
+            dist-desktop/*.zip
+            dist-desktop/*.exe
+            dist-desktop/*.blockmap
+            dist-desktop/latest*.yml

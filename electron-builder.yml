@@ -1,0 +1,66 @@
+appId: com.personalassistant.app
+productName: Personal Assistant
+copyright: Copyright © 2026
+
+directories:
+  output: dist-desktop
+  buildResources: electron/assets
+
+files:
+  - "electron/**/*"
+  - "package.json"
+
+extraResources:
+  - from: ".next/standalone"
+    to: "standalone"
+    filter:
+      - "**/*"
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: portable
+      arch:
+        - x64
+
+publish:
+  - provider: github
+    owner: elvla2
+    repo: PersonalAssistant
+
+nsis:
+  artifactName: "Personal-Assistant-Setup-${version}.${ext}"
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Personal Assistant
+  deleteAppDataOnUninstall: false
+
+portable:
+  artifactName: "Personal-Assistant-Portable-${version}.${ext}"
+
+mac:
+  category: public.app-category.productivity
+  identity: null
+  artifactName: "Personal-Assistant-${version}-${arch}.${ext}"
+  target:
+    - target: dmg
+      arch:
+        - arm64
+        - x64
+    - target: zip
+      arch:
+        - arm64
+        - x64
+
+dmg:
+  contents:
+    - x: 130
+      y: 220
+    - x: 410
+      y: 220
+      type: link
+      path: /Applications
