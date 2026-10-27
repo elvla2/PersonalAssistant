@@ -8,6 +8,7 @@ const path = require('path');
 const fs = require('fs');
 const net = require('net');
 const http = require('http');
+const https = require('https');
 const { fork } = require('child_process');
 
 try {
@@ -602,9 +603,99 @@ ipcMain.handle('updater-check', async () => {
   }
 });
 
+let downloadedMacDmgPath = null;
+
+function downloadFileWithProgress(url, destPath, onProgress) {
+  return new Promise((resolve, reject) => {
+    const request = (currentUrl, redirectCount = 0) => {
+      if (redirectCount > 5) {
+        return reject(new Error('Too many redirects while downloading update'));
+      }
+      const lib = currentUrl.startsWith('https') ? https : http;
+      const req = lib.get(
+        currentUrl,
+        { headers: { 'User-Agent': 'PersonalAssistant-Updater/1.0' } },
+        (res) => {
+          if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+            res.resume();
+            return request(res.headers.location, redirectCount + 1);
+          }
+          if (res.statusCode !== 200) {
+            res.resume();
+            return reject(new Error(`Cannot download "${currentUrl}", status ${res.statusCode}`));
+          }
+
+          const totalBytes = parseInt(res.headers['content-length'] || '0', 10);
+          let transferred = 0;
+          const startTime = Date.now();
+          const fileStream = fs.createWriteStream(destPath);
+
+          res.on('data', (chunk) => {
+            transferred += chunk.length;
+            if (totalBytes > 0 && onProgress) {
+              const elapsedSec = Math.max(0.1, (Date.now() - startTime) / 1000);
+              onProgress({
+                percent: Math.min(100, Math.round((transferred / totalBytes) * 100)),
+                bytesPerSecond: Math.round(transferred / elapsedSec),
+                transferred,
+                total: totalBytes,
+              });
+            }
+          });
+
+          res.pipe(fileStream);
+
+          fileStream.on('finish', () => {
+            fileStream.close(() => resolve(destPath));
+          });
+
+          fileStream.on('error', (err) => {
+            fs.unlink(destPath, () => {});
+            reject(err);
+          });
+        }
+      );
+
+      req.on('error', (err) => {
+        fs.unlink(destPath, () => {});
+        reject(err);
+      });
+    };
+
+    request(url);
+  });
+}
+
 ipcMain.handle('updater-download', async () => {
   try {
     broadcastUpdaterStatus({ status: 'downloading', error: null });
+
+    if (process.platform === 'darwin') {
+      // On unsigned macOS builds, download the architecture-matched .dmg directly from GitHub Release
+      const cfg = readUpdateConfig();
+      const version = updaterState.info?.version || app.getVersion();
+      const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
+      const dmgFileName = `Personal-Assistant-${version}-${arch}.dmg`;
+      const downloadsDir = app.getPath('downloads');
+      const destPath = path.join(downloadsDir, dmgFileName);
+
+      let downloadUrl = '';
+      if (cfg.provider === 'github' && cfg.githubRepo && cfg.githubRepo.includes('/')) {
+        downloadUrl = `https://github.com/${cfg.githubRepo.trim()}/releases/download/v${version}/${dmgFileName}`;
+      } else if (cfg.updateUrl) {
+        downloadUrl = `${cfg.updateUrl.replace(/\/$/, '')}/${dmgFileName}`;
+      } else {
+        downloadUrl = `https://github.com/elvla2/PersonalAssistant/releases/download/v${version}/${dmgFileName}`;
+      }
+
+      downloadedMacDmgPath = await downloadFileWithProgress(downloadUrl, destPath, (progress) => {
+        broadcastUpdaterStatus({ status: 'downloading', progress });
+      });
+
+      broadcastUpdaterStatus({ status: 'downloaded', info: updaterState.info });
+      return { success: true, filePath: downloadedMacDmgPath };
+    }
+
     await autoUpdater.downloadUpdate();
     return { success: true };
   } catch (err) {
@@ -614,7 +705,16 @@ ipcMain.handle('updater-download', async () => {
   }
 });
 
-ipcMain.handle('updater-quit-and-install', () => {
+ipcMain.handle('updater-quit-and-install', async () => {
+  if (process.platform === 'darwin' && downloadedMacDmgPath && fs.existsSync(downloadedMacDmgPath)) {
+    await shell.openPath(downloadedMacDmgPath);
+    app.isQuitting = true;
+    stopEmbeddedServer();
+    setTimeout(() => {
+      app.quit();
+    }, 500);
+    return;
+  }
   app.isQuitting = true;
   stopEmbeddedServer();
   autoUpdater.quitAndInstall(false, true);
