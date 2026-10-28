@@ -42,13 +42,29 @@ jobs:
       - name: Prepare standalone distribution
         run: node scripts/prepare_standalone.mjs
 
+      - name: Extract version from package.json
+        id: pkg
+        shell: bash
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
       - name: Package Desktop App (macOS)
         if: runner.os == 'macOS'
-        run: npx electron-builder --mac --publish never
+        run: |
+          npx electron-builder --mac --publish never
+          cp dist-desktop/Personal-Assistant-*-arm64.dmg dist-desktop/Personal-Assistant-arm64.dmg || true
+          cp dist-desktop/Personal-Assistant-*-x64.dmg dist-desktop/Personal-Assistant-x64.dmg || true
+          cp dist-desktop/Personal-Assistant-*-arm64.zip dist-desktop/Personal-Assistant-arm64.zip || true
+          cp dist-desktop/Personal-Assistant-*-x64.zip dist-desktop/Personal-Assistant-x64.zip || true
 
       - name: Package Desktop App (Windows)
         if: runner.os == 'Windows'
-        run: npx electron-builder --win --publish never
+        shell: pwsh
+        run: |
+          npx electron-builder --win --publish never
+          Get-ChildItem dist-desktop/Personal-Assistant-Setup-*.exe | Select-Object -First 1 | ForEach-Object { Copy-Item $_.FullName dist-desktop/Personal-Assistant-Setup.exe -Force }
+          Get-ChildItem dist-desktop/Personal-Assistant-Portable-*.exe | Select-Object -First 1 | ForEach-Object { Copy-Item $_.FullName dist-desktop/Personal-Assistant-Portable.exe -Force }
 
       - name: Upload Artifacts to Actions Run
         uses: actions/upload-artifact@v4
@@ -67,8 +83,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag_name: ${{ github.ref_name != 'main' && github.ref_name || 'v1.0.2' }}
-          name: Release ${{ github.ref_name != 'main' && github.ref_name || 'v1.0.2' }}
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v{0}', steps.pkg.outputs.version) }}
+          name: Release ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v{0}', steps.pkg.outputs.version) }}
           draft: false
           prerelease: false
           generate_release_notes: true
