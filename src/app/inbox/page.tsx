@@ -87,7 +87,15 @@ export default function UnifiedInboxPage() {
       ]);
 
       if (accountsRes.data) {
-        setAccounts(accountsRes.data);
+        setAccounts((prev) => {
+          if (
+            prev.length === accountsRes.data.length &&
+            JSON.stringify(prev) === JSON.stringify(accountsRes.data)
+          ) {
+            return prev;
+          }
+          return accountsRes.data;
+        });
       }
 
       // Map action items by thread_id, prioritizing uncompleted or highest priority item

@@ -6,19 +6,23 @@ You are the mastermind, the genius behind all the thinking and analyzing. You wi
 ---
 
 ## Non-Negotiable System Invariants
-> **CRITICAL DIRECTIVE:** Unless explicitly instructed otherwise by the user, the following five architectural pillars must remain entirely intact, untouched, and fully functional across all planning and code execution phases:
+> **CRITICAL DIRECTIVE:** Unless explicitly instructed otherwise by the user, the following six architectural pillars must remain entirely intact, untouched, and fully functional across all planning and code execution phases:
 
 1. **Realtime Inbox:** Live updates on `/inbox` must remain working without requiring tab switching (powered by local WebSocket/SSE event streams, not polling or focus triggers).
 2. **Sync Engine:** Scheduled sync and manual sync must remain fully intact and operational.
 3. **WhatsApp Integration:** WhatsApp connection lifecycle must remain stable, robust, and continuous.
 4. **Data Hygiene & AI:** Exclusion rules and AI auto-purge mechanisms must remain intact.
 5. **Core Access:** Settings page and account authentication systems must remain completely untouched.
+6. **Form & Editor Input Preservation (Email & WhatsApp):** Active user inputs, text editors (reply modals for Email and WhatsApp, compose drafts, rich signature editors, search bars, and configuration forms) must NEVER have their active keystrokes or typed text wiped, reset, or cleared by background polling, realtime heartbeat events, or parent component re-renders. Every editor and form must implement strict identity guards (`initializedItemIdRef`, `loadedAccountIdRef`, `userHasEditedRef`) to ensure bulletproof input persistence.
 
 ---
 
 ## Automated Verification & Pre-Flight Enforcement
 Before any task completion report is submitted or changes are declared finished, the Subagent must execute and verify the following invariant integrity checks:
 
+- **Form & Editor State Isolation Check:**
+  - Verify all modal dialogs, rich text editors (`ReplyModal.tsx`, `RichSignatureEditor.tsx`, etc.), and input forms guard their text state against background polling / `accounts` prop changes.
+  - Verify `useEffect` initializers use ref guards (`initializedItemIdRef`, `loadedAccountIdRef`, `userHasEditedRef`) so background updates never overwrite active user typing.
 - **Auth & Settings Diff Gate:** 
   - Execute a git diff check on `/app/(dashboard)/settings` and authentication routes/helpers (`/app/api/auth/**`, middleware, sessions, and password handlers).
   - Unless explicit user approval was granted for auth/settings changes, `git diff` on these boundaries must be empty (`0 files changed`).

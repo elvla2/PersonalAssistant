@@ -62,22 +62,61 @@ export default function ReplyModal({
   const [successMsg, setSuccessMsg] = useState('');
 
   const editorRef = useRef<HTMLDivElement>(null);
+  const initializedItemIdRef = useRef<string | null>(null);
+  const userHasEditedRef = useRef<boolean>(false);
+  const currentSignatureRef = useRef<string>('');
+  const activeAccountIdRef = useRef<string>(selectedAccountId);
 
   // Sync initial draft to editor (starts empty unless user specifically passed a draft)
   useEffect(() => {
     if (!item) return;
-    const activeAccount = accounts.find((a) => a.id === selectedAccountId);
-    let initialText = initialDraft || '';
-    if (!isWhatsApp && activeAccount?.signature) {
-      initialText = initialText
-        ? `${initialText}<br><br>${activeAccount.signature}`
-        : `<br><br>${activeAccount.signature}`;
+
+    // 1. Initial load for this item/modal
+    if (initializedItemIdRef.current !== item.id) {
+      initializedItemIdRef.current = item.id;
+      userHasEditedRef.current = false;
+      activeAccountIdRef.current = selectedAccountId;
+
+      const activeAccount = accounts.find((a) => a.id === selectedAccountId);
+      const sig = !isWhatsApp && activeAccount?.signature ? activeAccount.signature : '';
+      currentSignatureRef.current = sig;
+
+      let initialText = initialDraft || '';
+      if (sig) {
+        initialText = initialText ? `${initialText}<br><br>${sig}` : `<br><br>${sig}`;
+      }
+
+      setBodyHtml(initialText);
+      if (editorRef.current) {
+        editorRef.current.innerHTML = initialText;
+      }
+      return;
     }
-    setBodyHtml(initialText);
-    if (editorRef.current) {
-      editorRef.current.innerHTML = initialText;
+
+    // 2. User explicitly switched email account in dropdown
+    if (!isWhatsApp && activeAccountIdRef.current !== selectedAccountId) {
+      activeAccountIdRef.current = selectedAccountId;
+      const activeAccount = accounts.find((a) => a.id === selectedAccountId);
+      const newSig = activeAccount?.signature || '';
+      const oldSig = currentSignatureRef.current;
+      currentSignatureRef.current = newSig;
+
+      if (editorRef.current) {
+        let currentHtml = editorRef.current.innerHTML;
+        if (oldSig && currentHtml.includes(oldSig)) {
+          currentHtml = currentHtml.replace(oldSig, newSig);
+        } else if (newSig) {
+          currentHtml = currentHtml ? `${currentHtml}<br><br>${newSig}` : `<br><br>${newSig}`;
+        }
+        editorRef.current.innerHTML = currentHtml;
+        setBodyHtml(currentHtml);
+      }
+      return;
     }
-  }, [item, initialDraft, selectedAccountId, accounts, isWhatsApp]);
+
+    // CRITICAL INVARIANT: If modal is already open for this item and accounts/heartbeat re-rendered,
+    // DO NOT touch editorRef.current.innerHTML! User's active typing is strictly preserved.
+  }, [item, initialDraft, selectedAccountId, isWhatsApp, accounts]);
 
   if (!item) return null;
 
@@ -89,6 +128,7 @@ export default function ReplyModal({
   };
 
   const handleApplySuggestion = (suggestionText: string) => {
+    userHasEditedRef.current = true;
     const activeAccount = accounts.find((a) => a.id === selectedAccountId);
     let newContent = suggestionText;
     if (!isWhatsApp && activeAccount?.signature) {
@@ -328,6 +368,7 @@ export default function ReplyModal({
               ref={editorRef}
               contentEditable
               onInput={() => {
+                userHasEditedRef.current = true;
                 if (editorRef.current) setBodyHtml(editorRef.current.innerHTML);
               }}
               className="p-4 min-h-[160px] max-h-[300px] overflow-y-auto text-sm text-slate-100 focus:outline-none"
