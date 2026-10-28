@@ -31,13 +31,11 @@ import {
 import {
   isElectronApp,
   getDesktopUpdateStatus,
-  saveDesktopUpdateConfig,
   checkDesktopForUpdates,
   downloadDesktopUpdate,
   quitAndInstallDesktopUpdate,
   installDesktopLocalUpdateFile,
   onDesktopUpdateStatusChange,
-  type UpdateConfig,
   type UpdaterState,
 } from '@/lib/desktopBridge';
 
@@ -52,15 +50,8 @@ export default function SettingsPage() {
   const [isDesktop, setIsDesktop] = useState(false);
   const [appVersion, setAppVersion] = useState('v1.0.0');
   const [updaterState, setUpdaterState] = useState<UpdaterState>({ status: 'idle' });
-  const [updateConfig, setUpdateConfig] = useState<UpdateConfig>({
-    provider: 'github',
-    githubRepo: 'elvla2/PersonalAssistant',
-    updateUrl: '',
-    autoCheck: true,
-  });
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [downloadingUpdate, setDownloadingUpdate] = useState(false);
-  const [savingUpdateConfig, setSavingUpdateConfig] = useState(false);
   const [installingLocal, setInstallingLocal] = useState(false);
   const [updateMsg, setUpdateMsg] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
 
@@ -200,9 +191,6 @@ export default function SettingsPage() {
           if (status.state) {
             setUpdaterState(status.state);
           }
-          if (status.config) {
-            setUpdateConfig(status.config);
-          }
         }
       });
 
@@ -269,24 +257,6 @@ export default function SettingsPage() {
       setUpdateMsg({ type: 'error', text: err?.message || 'Local install failed.' });
     } finally {
       setInstallingLocal(false);
-    }
-  };
-
-  const handleSaveUpdateConfig = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setSavingUpdateConfig(true);
-    setUpdateMsg(null);
-    try {
-      const res = await saveDesktopUpdateConfig(updateConfig);
-      if (res?.success) {
-        setUpdateMsg({ type: 'success', text: 'Software update preferences saved successfully.' });
-      } else {
-        setUpdateMsg({ type: 'error', text: 'Failed to save update configuration.' });
-      }
-    } catch (err: any) {
-      setUpdateMsg({ type: 'error', text: err?.message || 'Failed to save configuration.' });
-    } finally {
-      setSavingUpdateConfig(false);
     }
   };
 
@@ -1249,110 +1219,6 @@ export default function SettingsPage() {
               <p className="text-[11px] text-slate-500 leading-relaxed">
                 Tip: If you receive a compiled <code className="text-slate-400 font-mono">Personal Assistant Setup *.exe</code> file directly, use the <strong>Install Update from Local .exe File</strong> option. The app will cleanly close its background server and upgrade itself in place.
               </p>
-            </section>
-
-            {/* Section 2: Update Server / Release Source Configuration */}
-            <section className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
-              <div className="flex items-center gap-2.5">
-                <div className="p-2 rounded-xl bg-slate-800 text-indigo-400 border border-slate-700">
-                  <Globe className="w-5 h-5" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-semibold text-slate-100">Release Source Configuration</h3>
-                  <p className="text-xs text-slate-400">Specify where the desktop app checks for software releases</p>
-                </div>
-              </div>
-
-              <form onSubmit={handleSaveUpdateConfig} className="space-y-4">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
-                    Release Provider
-                  </label>
-                  <div className="grid grid-cols-2 gap-3 max-w-md">
-                    <button
-                      type="button"
-                      onClick={() => setUpdateConfig((c) => ({ ...c, provider: 'github' }))}
-                      className={`p-3 rounded-xl border text-left text-xs font-medium transition-all cursor-pointer ${
-                        updateConfig.provider === 'github'
-                          ? 'bg-indigo-600/20 text-indigo-300 border-indigo-500/40 shadow-sm'
-                          : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-slate-200'
-                      }`}
-                    >
-                      <div className="font-semibold text-slate-200 mb-0.5">GitHub Releases</div>
-                      <div className="text-[11px] text-slate-400">Fetch releases published on GitHub repository</div>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setUpdateConfig((c) => ({ ...c, provider: 'generic' }))}
-                      className={`p-3 rounded-xl border text-left text-xs font-medium transition-all cursor-pointer ${
-                        updateConfig.provider === 'generic'
-                          ? 'bg-indigo-600/20 text-indigo-300 border-indigo-500/40 shadow-sm'
-                          : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-slate-200'
-                      }`}
-                    >
-                      <div className="font-semibold text-slate-200 mb-0.5">Custom Server (Generic)</div>
-                      <div className="text-[11px] text-slate-400">Fetch latest.yml from custom HTTP/S endpoint</div>
-                    </button>
-                  </div>
-                </div>
-
-                {updateConfig.provider === 'github' ? (
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">
-                      GitHub Repository (owner/repo)
-                    </label>
-                    <input
-                      type="text"
-                      value={updateConfig.githubRepo || ''}
-                      onChange={(e) => setUpdateConfig((c) => ({ ...c, githubRepo: e.target.value }))}
-                      placeholder="e.g. your-org/personal-assistant"
-                      className="w-full max-w-md px-3.5 py-2 rounded-xl bg-slate-950 border border-slate-800 text-slate-200 text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none"
-                    />
-                  </div>
-                ) : (
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">
-                      Update Server Base URL
-                    </label>
-                    <input
-                      type="url"
-                      value={updateConfig.updateUrl || ''}
-                      onChange={(e) => setUpdateConfig((c) => ({ ...c, updateUrl: e.target.value }))}
-                      placeholder="https://updates.example.com/desktop"
-                      className="w-full max-w-md px-3.5 py-2 rounded-xl bg-slate-950 border border-slate-800 text-slate-200 text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none"
-                    />
-                  </div>
-                )}
-
-                <div className="flex items-center gap-2 pt-1">
-                  <input
-                    type="checkbox"
-                    id="autoCheck"
-                    checked={updateConfig.autoCheck !== false}
-                    onChange={(e) => setUpdateConfig((c) => ({ ...c, autoCheck: e.target.checked }))}
-                    className="rounded bg-slate-950 border-slate-800 text-indigo-600 focus:ring-0"
-                  />
-                  <label htmlFor="autoCheck" className="text-xs text-slate-300">
-                    Automatically check for updates on application launch
-                  </label>
-                </div>
-
-                <div className="pt-2">
-                  <button
-                    type="submit"
-                    disabled={savingUpdateConfig || !isDesktop}
-                    className="flex items-center gap-2 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-xs font-semibold text-white shadow-md shadow-indigo-600/20 transition-all disabled:opacity-50 cursor-pointer"
-                  >
-                    {savingUpdateConfig ? (
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    ) : (
-                      <Save className="w-3.5 h-3.5" />
-                    )}
-                    <span>Save Update Preferences</span>
-                  </button>
-                </div>
-              </form>
             </section>
           </div>
         )}

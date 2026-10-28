@@ -548,6 +548,14 @@ autoUpdater.on('checking-for-update', () => {
 
 autoUpdater.on('update-available', (info) => {
   broadcastUpdaterStatus({ status: 'available', info, error: null });
+  try {
+    if (Notification.isSupported()) {
+      new Notification({
+        title: 'Personal Assistant Update Available',
+        body: `Version v${info?.version || ''} is available. Click to download.`,
+      }).show();
+    }
+  } catch {}
 });
 
 autoUpdater.on('update-not-available', (info) => {
@@ -568,6 +576,14 @@ autoUpdater.on('download-progress', (progressObj) => {
 
 autoUpdater.on('update-downloaded', (info) => {
   broadcastUpdaterStatus({ status: 'downloaded', info });
+  try {
+    if (Notification.isSupported()) {
+      new Notification({
+        title: 'Update Downloaded',
+        body: `Version v${info?.version || ''} has been downloaded. Restart to apply update.`,
+      }).show();
+    }
+  } catch {}
 });
 
 autoUpdater.on('error', (err) => {
@@ -799,6 +815,20 @@ if (!gotTheLock) {
     createWindow();
     createTray();
     configureAutoUpdater();
+
+    setTimeout(() => {
+      try {
+        const cfg = readUpdateConfig();
+        if (cfg.autoCheck !== false) {
+          console.log('[updater] Automatically checking for updates on application launch...');
+          autoUpdater.checkForUpdates().catch((err) => {
+            console.warn('[updater] Startup update check failed:', err?.message || err);
+          });
+        }
+      } catch (err) {
+        console.warn('[updater] Startup update check exception:', err?.message || err);
+      }
+    }, 3500);
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {
