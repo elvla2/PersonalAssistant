@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { ActionItem, Account } from '@/types';
+import { useRealtime } from '@/components/RealtimeProvider';
 import {
   X,
   Send,
@@ -39,6 +40,7 @@ export default function ReplyModal({
   onClose,
   onSent,
 }: ReplyModalProps) {
+  const { triggerManualRefresh } = useRealtime();
   const isWhatsApp = item?.channel === 'whatsapp';
 
   // Determine default account
@@ -129,6 +131,7 @@ export default function ReplyModal({
         throw new Error(data.error || 'Failed to dispatch reply');
       }
 
+      triggerManualRefresh();
       setSuccessMsg('Reply dispatched successfully!');
       setTimeout(() => {
         onSent();

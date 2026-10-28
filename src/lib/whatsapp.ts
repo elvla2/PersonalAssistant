@@ -12,6 +12,7 @@ import { isDesktopMode } from '@/lib/db/isDesktop';
 import { getUserWhatsAppDir, getUserDir, getLocalDbDir } from '@/lib/db/localDb';
 import { getDefaultOrFirstUserId, getLocalUserById } from '@/lib/db/localAuthEngine';
 import { LOCAL_USER_ID } from '@/lib/db/localUser';
+import { generateThreadId } from '@/lib/threadUtils';
 
 export interface WAMessage {
   id: string;
@@ -397,15 +398,38 @@ export class WhatsAppService {
       });
 
       this.sock.ev.on('messages.upsert', ({ messages }: any) => {
-        for (const m of messages) this.processMessage(m);
+        const affectedJids = new Set<string>();
+        for (const m of messages) {
+          this.processMessage(m);
+          const jid = m.key?.remoteJid;
+          if (jid && jid !== 'status@broadcast') {
+            affectedJids.add(jid);
+          }
+        }
         this.saveCache();
+        for (const jid of affectedJids) {
+          this.syncThreadToDatabase(jid).catch((err) =>
+            console.warn('[WhatsApp] syncThreadToDatabase upsert error:', err?.message)
+          );
+        }
       });
 
       this.sock.ev.on('messages.reaction', (reactions: any) => {
+        const affectedJids = new Set<string>();
         for (const r of reactions) {
           this.processReactionUpdate(r);
+          const targetKey = r.reaction?.key;
+          const targetJid = targetKey?.remoteJid || r.key?.remoteJid;
+          if (targetJid && targetJid !== 'status@broadcast') {
+            affectedJids.add(targetJid);
+          }
         }
         this.saveCache();
+        for (const jid of affectedJids) {
+          this.syncThreadToDatabase(jid).catch((err) =>
+            console.warn('[WhatsApp] syncThreadToDatabase reaction error:', err?.message)
+          );
+        }
       });
 
       this.sock.ev.on('contacts.upsert', (contacts: any) => {
@@ -418,6 +442,70 @@ export class WhatsAppService {
     } catch (e: any) {
       console.error(`[WhatsApp] Init exception for user ${this.userId}:`, e.message);
       this.isStarting = false;
+    }
+  }
+
+  public async syncThreadToDatabase(jid: string): Promise<void> {
+    try {
+      if (!jid || jid === 'status@broadcast') return;
+      const msgs = this.messagesByChat.get(jid);
+      if (!msgs || msgs.length === 0) return;
+
+      const sorted = [...msgs].sort(
+        (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+      );
+      const lastMsg = sorted[sorted.length - 1];
+      const contactName = this.resolveContactName(jid);
+      const hasUserAnswered = Boolean(lastMsg.isFromMe) || Boolean(lastMsg.myReaction);
+      const threadId = generateThreadId(this.userId, 'whatsapp', jid);
+
+      const admin = createAdminClient(this.userId);
+      const { data: existing } = await admin
+        .from('conversation_threads')
+        .select('id, status, last_message_at')
+        .eq('id', threadId)
+        .eq('user_id', this.userId)
+        .maybeSingle();
+
+      let targetStatus: 'ACTION_NEEDED' | 'RESOLVED' | 'PURGED' = hasUserAnswered
+        ? 'RESOLVED'
+        : 'ACTION_NEEDED';
+
+      if (existing) {
+        if (existing.status === 'PURGED') {
+          targetStatus = 'PURGED';
+        } else if (hasUserAnswered) {
+          targetStatus = 'RESOLVED';
+        } else if (existing.status === 'RESOLVED') {
+          const currentMsgTime = new Date(lastMsg.timestamp).getTime();
+          const prevMsgTime = existing.last_message_at
+            ? new Date(existing.last_message_at).getTime()
+            : 0;
+          if (currentMsgTime > prevMsgTime) {
+            targetStatus = 'ACTION_NEEDED';
+          } else {
+            targetStatus = 'RESOLVED';
+          }
+        }
+      }
+
+      await admin.from('conversation_threads').upsert({
+        id: threadId,
+        user_id: this.userId,
+        channel: 'whatsapp',
+        external_id: jid,
+        subject_or_title: `WhatsApp with ${contactName}`,
+        participants: contactName,
+        snippet: lastMsg.text,
+        body_text: JSON.stringify(sorted),
+        last_message_at: lastMsg.timestamp,
+        last_message_sender: contactName,
+        is_outgoing_last: hasUserAnswered,
+        status: targetStatus,
+        updated_at: new Date().toISOString(),
+      });
+    } catch (err: any) {
+      console.warn(`[WhatsApp] Realtime DB sync note for ${jid}:`, err?.message);
     }
   }
 

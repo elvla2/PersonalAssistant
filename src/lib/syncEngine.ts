@@ -1,10 +1,12 @@
-import crypto from 'node:crypto';
 import { SupabaseClient } from '@supabase/supabase-js';
 import type { Account, UserSetting, ExclusionRule } from '@/types';
 import { fetchAccountThreads } from '@/lib/imap';
 import { whatsAppManager, getWhatsAppUserIdentity } from '@/lib/whatsapp';
 import { analyzeThread } from '@/lib/triage';
 import { fetchActiveRules, isItemExcluded } from '@/lib/rules';
+import { generateThreadId } from '@/lib/threadUtils';
+
+export { generateThreadId } from '@/lib/threadUtils';
 
 export interface SyncResult {
   success: boolean;
@@ -15,13 +17,6 @@ export interface SyncResult {
   error?: string;
   alreadyRunning?: boolean;
   message?: string;
-}
-
-export function generateThreadId(userId: string, channel: string, externalId: string): string {
-  return crypto
-    .createHash('sha256')
-    .update(`${userId}_${channel}_${externalId}`)
-    .digest('hex');
 }
 
 async function safeSaveActionItem(

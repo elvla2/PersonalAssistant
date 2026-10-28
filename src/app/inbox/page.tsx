@@ -42,11 +42,14 @@ export default function UnifiedInboxPage() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [threadBodies, setThreadBodies] = useState<Record<string, { body_html?: string | null; body_text?: string | null }>>({});
+  const threadBodiesRef = useRef(threadBodies);
+  threadBodiesRef.current = threadBodies;
   const [loadingBody, setLoadingBody] = useState<boolean>(false);
   const isFetchingRef = useRef<boolean>(false);
   const [loading, setLoading] = useState(true);
   const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
   const [statusUpdatingId, setStatusUpdatingId] = useState<string | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Filters
   const [searchQuery, setSearchQuery] = useState('');
@@ -67,7 +70,7 @@ export default function UnifiedInboxPage() {
       const [threadsRes, actionsRes, accountsRes, purgeLogRes] = await Promise.all([
         supabase
           .from('conversation_threads')
-          .select('id, user_id, account_id, channel, external_id, subject_or_title, last_message_sender, last_message_at, snippet, status, sender_email, is_outgoing_last')
+          .select('id, user_id, account_id, channel, external_id, subject_or_title, last_message_sender, last_message_at, snippet, status, sender_email, is_outgoing_last, updated_at')
           .order('last_message_at', { ascending: false }),
         supabase
           .from('action_items')
@@ -147,13 +150,14 @@ export default function UnifiedInboxPage() {
     fetchData();
   }, [lastUpdated]);
 
-  // Lazy-load full thread bodies (body_html, body_text) on demand
+  // Lazy-load full thread bodies (body_html, body_text) on demand & update when real-time ticks
   useEffect(() => {
     if (!selectedThreadId) return;
-    if (threadBodies[selectedThreadId]) return;
-
     let isMounted = true;
-    setLoadingBody(true);
+    const currentCached = threadBodiesRef.current[selectedThreadId];
+    if (!currentCached) {
+      setLoadingBody(true);
+    }
 
     const fetchBody = async () => {
       try {
@@ -164,13 +168,23 @@ export default function UnifiedInboxPage() {
           .maybeSingle();
 
         if (isMounted && data) {
-          setThreadBodies((prev) => ({
-            ...prev,
-            [selectedThreadId]: {
-              body_html: data.body_html,
-              body_text: data.body_text,
-            },
-          }));
+          setThreadBodies((prev) => {
+            const prevEntry = prev[selectedThreadId];
+            if (
+              prevEntry &&
+              prevEntry.body_html === data.body_html &&
+              prevEntry.body_text === data.body_text
+            ) {
+              return prev;
+            }
+            return {
+              ...prev,
+              [selectedThreadId]: {
+                body_html: data.body_html,
+                body_text: data.body_text,
+              },
+            };
+          });
         }
       } catch (err) {
         console.error('Error fetching thread body:', err);
@@ -184,7 +198,7 @@ export default function UnifiedInboxPage() {
     return () => {
       isMounted = false;
     };
-  }, [selectedThreadId, threadBodies]);
+  }, [selectedThreadId, lastUpdated]);
 
   const filteredThreads = useMemo(() => {
     return threads.filter((t) => {
@@ -225,6 +239,12 @@ export default function UnifiedInboxPage() {
     }
     return null;
   }, [selectedThread, activeBodyText]);
+
+  useEffect(() => {
+    if (selectedThread?.channel === 'whatsapp' && whatsappMessages) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [selectedThreadId, whatsappMessages?.length, selectedThread?.channel]);
 
   const handleSelectThread = (threadId: string) => {
     setSelectedThreadId(threadId);
@@ -908,6 +928,7 @@ export default function UnifiedInboxPage() {
                           </div>
                         );
                       })}
+                      <div ref={messagesEndRef} />
                     </div>
                   ) : (
                     <div className="text-sm text-slate-200 whitespace-pre-wrap leading-relaxed font-sans break-words bg-slate-950/70 p-5 rounded-xl border border-slate-800">

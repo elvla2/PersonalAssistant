@@ -110,15 +110,22 @@ export async function POST(request: Request) {
         .eq('user_id', user.id);
     }
 
-    // 3. Mark thread as resolved
+    // 3. Mark thread as resolved and update snippet/outgoing state
     if (thread_id) {
+      const threadUpdate: any = {
+        status: 'RESOLVED',
+        is_outgoing_last: true,
+        updated_at: new Date().toISOString(),
+      };
+      if (channel === 'whatsapp') {
+        threadUpdate.snippet = content;
+        threadUpdate.last_message_at = new Date().toISOString();
+        threadUpdate.last_message_sender = 'Me';
+      }
+
       await supabase
         .from('conversation_threads')
-        .update({
-          status: 'RESOLVED',
-          is_outgoing_last: true,
-          updated_at: new Date().toISOString(),
-        })
+        .update(threadUpdate)
         .eq('id', thread_id)
         .eq('user_id', user.id);
     }
