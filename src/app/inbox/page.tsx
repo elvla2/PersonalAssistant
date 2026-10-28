@@ -25,6 +25,7 @@ import {
   RefreshCw,
   ChevronLeft,
   Check,
+  Users,
 } from 'lucide-react';
 
 const PRIORITY_ORDER: Record<string, number> = {
@@ -561,6 +562,7 @@ export default function UnifiedInboxPage() {
                 filteredThreads.map((thread) => {
                   const isSelected = selectedThread?.id === thread.id;
                   const isWa = thread.channel === 'whatsapp';
+                  const isWaGroup = isWa && (thread.external_id?.endsWith('@g.us') || thread.participants?.includes('@g.us'));
                   const isResolved = thread.status === 'RESOLVED';
                   const isUpdating = statusUpdatingId === thread.id;
 
@@ -577,7 +579,11 @@ export default function UnifiedInboxPage() {
                       <div className="flex items-center justify-between gap-2">
                         <div className="flex items-center gap-1.5 min-w-0">
                           {isWa ? (
-                            <MessageCircle className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                            isWaGroup ? (
+                              <Users className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                            ) : (
+                              <MessageCircle className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                            )
                           ) : (
                             <Mail className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
                           )}
@@ -720,6 +726,9 @@ export default function UnifiedInboxPage() {
                       </button>
 
                       <div className="flex items-center gap-2 flex-wrap">
+                        {selectedThread.channel === 'whatsapp' && (selectedThread.external_id?.endsWith('@g.us') || selectedThread.participants?.includes('@g.us')) && (
+                          <Users className="w-4 h-4 text-emerald-400 shrink-0" />
+                        )}
                         <h2 className="text-base sm:text-lg font-bold text-white truncate">
                           {selectedThread.subject_or_title || 'Conversation Detail'}
                         </h2>

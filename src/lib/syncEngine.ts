@@ -443,9 +443,14 @@ export async function runFullSyncForUser(
         whatsappProcessed += waConversations.length;
 
         for (const conv of waConversations) {
-        const threadId = generateThreadId(userId, 'whatsapp', conv.jid);
+          const threadId = generateThreadId(userId, 'whatsapp', conv.jid);
+          const threadSubject = conv.isGroup ? conv.name : `WhatsApp with ${conv.name}`;
+          const lastMsgObj = conv.messages[conv.messages.length - 1];
+          const snippetText = conv.isGroup && lastMsgObj?.sender && !lastMsgObj?.isFromMe && lastMsgObj?.sender !== conv.name
+            ? `${lastMsgObj.sender}: ${conv.lastMessage}`
+            : conv.lastMessage;
 
-        // Check exclusion rules
+          // Check exclusion rules
         const ruleCheck = isItemExcluded(
           rules,
           'whatsapp',
@@ -474,9 +479,9 @@ export async function runFullSyncForUser(
             user_id: userId,
             channel: 'whatsapp',
             external_id: conv.jid,
-            subject_or_title: `WhatsApp with ${conv.name}`,
+            subject_or_title: threadSubject,
             participants: conv.name,
-            snippet: conv.lastMessage,
+            snippet: snippetText,
             body_text: JSON.stringify(conv.messages),
             last_message_at: conv.lastMessageTime,
             last_message_sender: conv.name,
@@ -519,7 +524,7 @@ export async function runFullSyncForUser(
 
         const triage = await analyzeThread(
           {
-            subject: `WhatsApp with ${conv.name}`,
+            subject: threadSubject,
             channel: 'whatsapp',
             contact_name: conv.name,
             last_message_sender: conv.name,
@@ -564,9 +569,9 @@ export async function runFullSyncForUser(
             user_id: userId,
             channel: 'whatsapp',
             external_id: conv.jid,
-            subject_or_title: `WhatsApp with ${conv.name}`,
+            subject_or_title: threadSubject,
             participants: conv.name,
-            snippet: conv.lastMessage,
+            snippet: snippetText,
             body_text: JSON.stringify(conv.messages),
             last_message_at: conv.lastMessageTime,
             last_message_sender: conv.name,
@@ -617,9 +622,9 @@ export async function runFullSyncForUser(
             user_id: userId,
             channel: 'whatsapp',
             external_id: conv.jid,
-            subject_or_title: `WhatsApp with ${conv.name}`,
+            subject_or_title: threadSubject,
             participants: conv.name,
-            snippet: conv.lastMessage,
+            snippet: snippetText,
             body_text: JSON.stringify(conv.messages),
             last_message_at: conv.lastMessageTime,
             last_message_sender: conv.name,

@@ -198,6 +198,7 @@ export class WhatsAppService {
   private myLid: string | null = null;
   private messagesByChat: Map<string, WAMessage[]> = new Map();
   private contactsMap: Map<string, string> = new Map();
+  private groupSubjects: Map<string, string> = new Map();
   private lidMap: Map<string, string> = new Map();
   private chatsMetadata: Map<string, ChatMeta> = new Map();
   private isStarting: boolean = false;
@@ -287,6 +288,14 @@ export class WhatsAppService {
             if (name) this.contactsMap.set(jid, name as string);
           }
         }
+        if (raw.groupSubjects) {
+          for (const [jid, subject] of Object.entries(raw.groupSubjects)) {
+            if (subject) {
+              this.groupSubjects.set(jid, subject as string);
+              this.contactsMap.set(jid, subject as string);
+            }
+          }
+        }
         if (raw.chats) {
           for (const [jid, msgs] of Object.entries(raw.chats)) {
             if (Array.isArray(msgs)) this.messagesByChat.set(jid, msgs as WAMessage[]);
@@ -313,10 +322,20 @@ export class WhatsAppService {
         chatsObj[jid] = msgs.slice(-50);
       }
       const contactsObj = Object.fromEntries(this.contactsMap.entries());
+      const groupSubjectsObj = Object.fromEntries(this.groupSubjects.entries());
       const metaObj = Object.fromEntries(this.chatsMetadata.entries());
       fs.writeFileSync(
         this.cacheFile,
-        JSON.stringify({ chats: chatsObj, contacts: contactsObj, chatsMetadata: metaObj }, null, 2),
+        JSON.stringify(
+          {
+            chats: chatsObj,
+            contacts: contactsObj,
+            groupSubjects: groupSubjectsObj,
+            chatsMetadata: metaObj,
+          },
+          null,
+          2
+        ),
         'utf-8'
       );
     } catch (e) {
@@ -394,7 +413,56 @@ export class WhatsAppService {
           }
           this.isStarting = false;
           await this.syncSessionToSupabase('connected', null, phone);
+          this.fetchAllGroups().catch((err) =>
+            console.warn(`[WhatsApp] fetchAllGroups on connect note:`, err?.message)
+          );
         }
+      });
+
+      this.sock.ev.on('groups.upsert', (groups: any) => {
+        for (const g of groups) {
+          if (g?.id && g?.subject) {
+            this.groupSubjects.set(g.id, g.subject);
+            this.contactsMap.set(g.id, g.subject);
+          }
+        }
+        this.saveCache();
+        this.healExistingGroupThreads().catch(() => {});
+      });
+
+      this.sock.ev.on('groups.update', (updates: any) => {
+        for (const u of updates) {
+          if (u?.id && u?.subject) {
+            this.groupSubjects.set(u.id, u.subject);
+            this.contactsMap.set(u.id, u.subject);
+          }
+        }
+        this.saveCache();
+        this.healExistingGroupThreads().catch(() => {});
+      });
+
+      this.sock.ev.on('chats.upsert', (chats: any) => {
+        for (const c of chats) {
+          if (c?.id && c?.name) {
+            if (c.id.endsWith('@g.us')) {
+              this.groupSubjects.set(c.id, c.name);
+            }
+            this.contactsMap.set(c.id, c.name);
+          }
+        }
+        this.saveCache();
+      });
+
+      this.sock.ev.on('chats.update', (updates: any) => {
+        for (const u of updates) {
+          if (u?.id && u?.name) {
+            if (u.id.endsWith('@g.us')) {
+              this.groupSubjects.set(u.id, u.name);
+            }
+            this.contactsMap.set(u.id, u.name);
+          }
+        }
+        this.saveCache();
       });
 
       this.sock.ev.on('messages.upsert', ({ messages }: any) => {
@@ -455,7 +523,17 @@ export class WhatsAppService {
         (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
       );
       const lastMsg = sorted[sorted.length - 1];
-      const contactName = this.resolveContactName(jid);
+      const isGroup = jid.endsWith('@g.us');
+      let groupOrContactName = this.resolveContactName(jid);
+      if (isGroup && (!this.groupSubjects.has(jid) || groupOrContactName === jid.split('@')[0])) {
+        groupOrContactName = await this.fetchGroupSubject(jid);
+      }
+
+      const threadTitle = isGroup ? groupOrContactName : `WhatsApp with ${groupOrContactName}`;
+      const snippetText = isGroup && lastMsg.sender && !lastMsg.isFromMe && lastMsg.sender !== groupOrContactName
+        ? `${lastMsg.sender}: ${lastMsg.text}`
+        : lastMsg.text;
+
       const hasUserAnswered = Boolean(lastMsg.isFromMe) || Boolean(lastMsg.myReaction);
       const threadId = generateThreadId(this.userId, 'whatsapp', jid);
 
@@ -494,12 +572,12 @@ export class WhatsAppService {
         user_id: this.userId,
         channel: 'whatsapp',
         external_id: jid,
-        subject_or_title: `WhatsApp with ${contactName}`,
-        participants: contactName,
-        snippet: lastMsg.text,
+        subject_or_title: threadTitle,
+        participants: groupOrContactName,
+        snippet: snippetText,
         body_text: JSON.stringify(sorted),
         last_message_at: lastMsg.timestamp,
-        last_message_sender: contactName,
+        last_message_sender: groupOrContactName,
         is_outgoing_last: hasUserAnswered,
         status: targetStatus,
         updated_at: new Date().toISOString(),
@@ -634,6 +712,7 @@ export class WhatsAppService {
 
     this.messagesByChat.clear();
     this.contactsMap.clear();
+    this.groupSubjects.clear();
     this.lidMap.clear();
     this.chatsMetadata.clear();
     this.isConnectedState = false;
@@ -644,9 +723,105 @@ export class WhatsAppService {
     return { success: true };
   }
 
+  public async fetchAllGroups(): Promise<void> {
+    if (!this.sock || !this.isConnectedState) return;
+    try {
+      const groups = await this.sock.groupFetchAllParticipating();
+      let updated = false;
+      for (const [id, meta] of Object.entries(groups as Record<string, any>)) {
+        if (meta?.subject) {
+          this.groupSubjects.set(id, meta.subject);
+          this.contactsMap.set(id, meta.subject);
+          updated = true;
+        }
+      }
+      if (updated) {
+        this.saveCache();
+        await this.healExistingGroupThreads();
+      }
+    } catch (err: any) {
+      console.warn(`[WhatsApp] fetchAllGroups note for user ${this.userId}:`, err?.message);
+    }
+  }
+
+  public async fetchGroupSubject(jid: string): Promise<string> {
+    if (!jid.endsWith('@g.us')) return this.resolveContactName(jid);
+    const cached = this.groupSubjects.get(jid) || this.contactsMap.get(jid);
+    if (cached && cached !== jid && cached !== jid.split('@')[0]) {
+      return cached;
+    }
+    if (this.sock && this.isConnectedState) {
+      try {
+        const meta = await this.sock.groupMetadata(jid);
+        if (meta?.subject) {
+          this.groupSubjects.set(jid, meta.subject);
+          this.contactsMap.set(jid, meta.subject);
+          this.saveCache();
+          return meta.subject;
+        }
+      } catch (err: any) {
+        console.warn(`[WhatsApp] fetchGroupSubject note for ${jid}:`, err?.message);
+      }
+    }
+    return cached || jid.split('@')[0];
+  }
+
+  public async healExistingGroupThreads(): Promise<void> {
+    try {
+      if (this.groupSubjects.size === 0) return;
+      const admin = createAdminClient(this.userId);
+      const { data: threads } = await admin
+        .from('conversation_threads')
+        .select('id, external_id, subject_or_title, last_message_sender')
+        .eq('channel', 'whatsapp')
+        .eq('user_id', this.userId);
+
+      if (!threads || threads.length === 0) return;
+
+      for (const t of threads) {
+        if (!t.external_id || !t.external_id.endsWith('@g.us')) continue;
+        const realSubject = this.groupSubjects.get(t.external_id);
+        if (!realSubject) continue;
+
+        const rawId = t.external_id.split('@')[0];
+        const needsHealing =
+          t.subject_or_title?.includes(rawId) ||
+          t.last_message_sender === rawId ||
+          !t.subject_or_title ||
+          t.subject_or_title === `WhatsApp with ${rawId}`;
+
+        if (needsHealing) {
+          await admin
+            .from('conversation_threads')
+            .update({
+              subject_or_title: realSubject,
+              last_message_sender: realSubject,
+              participants: realSubject,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', t.id)
+            .eq('user_id', this.userId);
+        }
+      }
+    } catch (err: any) {
+      console.warn(`[WhatsApp] healExistingGroupThreads note:`, err?.message);
+    }
+  }
+
   public resolveContactName(jid: string): string {
     if (!jid) return 'Unknown';
     if (jid === 'status@broadcast') return 'Status';
+
+    if (jid.endsWith('@g.us')) {
+      const groupName = this.groupSubjects.get(jid) || this.contactsMap.get(jid);
+      if (groupName && groupName !== jid.split('@')[0]) {
+        return groupName;
+      }
+      if (this.sock && this.isConnectedState) {
+        this.fetchGroupSubject(jid).catch(() => {});
+      }
+      return groupName || jid.split('@')[0];
+    }
 
     // 1. If it's a LID, check reverse mapping to phone JID in WhatsApp auth directory
     if (jid.endsWith('@lid')) {
