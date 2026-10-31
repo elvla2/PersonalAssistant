@@ -15,6 +15,10 @@ extraResources:
     to: "standalone"
     filter:
       - "**/*"
+  - from: ".next/standalone/server_modules"
+    to: "standalone/node_modules"
+    filter:
+      - "**/*"
 
 win:
   target:

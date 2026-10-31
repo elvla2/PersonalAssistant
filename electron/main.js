@@ -2,7 +2,7 @@
 process.env.DESKTOP_MODE = 'true';
 process.env.NEXT_PUBLIC_DESKTOP_MODE = 'true';
 
-const { app, BrowserWindow, Tray, Menu, ipcMain, Notification, nativeImage, shell, dialog } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, Notification, nativeImage, shell, dialog, utilityProcess } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const path = require('path');
 const fs = require('fs');
@@ -217,23 +217,44 @@ async function startEmbeddedServer(userDataPath) {
 
   let serverError = null;
   let stderrBuffer = '';
+  let isServerReady = false;
 
-  serverProcess = fork(serverScript, [], {
-    cwd: standaloneDir,
-    execPath: process.execPath,
-    env: {
-      ...process.env,
-      ELECTRON_RUN_AS_NODE: '1',
-      NODE_ENV: 'production',
-      HOSTNAME: '127.0.0.1',
-      PORT: String(port),
-      NODE_PATH: nodePathEntries,
-      DESKTOP_MODE: 'true',
-      NEXT_PUBLIC_DESKTOP_MODE: 'true',
-      LOCAL_DB_DIR: userDataPath,
-    },
-    stdio: 'pipe',
-  });
+  if (utilityProcess && typeof utilityProcess.fork === 'function') {
+    console.log('[main] Spawning standalone server using Electron utilityProcess');
+    serverProcess = utilityProcess.fork(serverScript, [], {
+      cwd: standaloneDir,
+      env: {
+        ...process.env,
+        NODE_ENV: 'production',
+        HOSTNAME: '127.0.0.1',
+        PORT: String(port),
+        NODE_PATH: nodePathEntries,
+        DESKTOP_MODE: 'true',
+        NEXT_PUBLIC_DESKTOP_MODE: 'true',
+        LOCAL_DB_DIR: userDataPath,
+      },
+      stdio: 'pipe',
+      serviceName: 'standalone-server',
+    });
+  } else {
+    console.log('[main] Spawning standalone server using child_process.fork fallback');
+    serverProcess = fork(serverScript, [], {
+      cwd: standaloneDir,
+      execPath: process.execPath,
+      env: {
+        ...process.env,
+        ELECTRON_RUN_AS_NODE: '1',
+        NODE_ENV: 'production',
+        HOSTNAME: '127.0.0.1',
+        PORT: String(port),
+        NODE_PATH: nodePathEntries,
+        DESKTOP_MODE: 'true',
+        NEXT_PUBLIC_DESKTOP_MODE: 'true',
+        LOCAL_DB_DIR: userDataPath,
+      },
+      stdio: 'pipe',
+    });
+  }
 
   if (serverProcess.stdout) {
     serverProcess.stdout.on('data', (data) => {
@@ -247,10 +268,14 @@ async function startEmbeddedServer(userDataPath) {
       console.error(`[standalone-server:err] ${text.trim()}`);
     });
   }
+  serverProcess.on('error', (err) => {
+    console.error('[standalone-server:process-err]', err);
+    serverError = new Error(`Standalone server failed to spawn: ${err?.message || err}`);
+  });
   serverProcess.on('exit', (code, signal) => {
     console.log(`[standalone-server] Exited with code ${code}, signal ${signal}`);
-    if (code !== 0 && code !== null) {
-      const errDetails = stderrBuffer.trim() || `Exit code ${code}, signal ${signal}`;
+    if (!isServerReady) {
+      const errDetails = stderrBuffer.trim() || `Process exited prematurely (code: ${code}, signal: ${signal})`;
       serverError = new Error(`Standalone server stopped unexpectedly.\n\n${errDetails}`);
     }
     serverProcess = null;
@@ -260,6 +285,7 @@ async function startEmbeddedServer(userDataPath) {
 
   const targetUrl = `http://127.0.0.1:${port}`;
   await waitForServer(targetUrl, 25000, () => serverError);
+  isServerReady = true;
   embeddedServerUrl = targetUrl;
   return targetUrl;
 }
