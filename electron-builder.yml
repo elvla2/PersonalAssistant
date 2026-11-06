@@ -1,6 +1,7 @@
 appId: com.personalassistant.app
 productName: Personal Assistant
 copyright: Copyright © 2026
+afterPack: "scripts/after_pack.cjs"
 
 directories:
   output: dist-desktop
@@ -17,6 +18,8 @@ extraResources:
       - "**/*"
       - "!server_modules"
       - "!server_modules/**"
+      - "!node_modules"
+      - "!node_modules/**"
   - from: ".next/standalone/server_modules"
     to: "standalone/node_modules"
     filter:
