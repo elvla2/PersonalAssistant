@@ -11,11 +11,21 @@ const http = require('http');
 const https = require('https');
 const { fork } = require('child_process');
 
-try {
-  const userDataPath = app.getPath('userData');
-  process.env.LOCAL_DB_DIR = userDataPath;
-} catch {
-  // Handled in app.whenReady
+const isSmokeTest = process.env.PA_SMOKE_TEST === '1';
+const smokeStartTime = Date.now();
+
+if (!process.env.LOCAL_DB_DIR) {
+  try {
+    const userDataPath = app.getPath('userData');
+    process.env.LOCAL_DB_DIR = userDataPath;
+  } catch {
+    // Handled in app.whenReady
+  }
+}
+
+if (isSmokeTest) {
+  app.commandLine.appendSwitch('disable-renderer-backgrounding');
+  app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
 }
 
 // Single instance lock to avoid duplicate background processes
@@ -24,6 +34,7 @@ const gotTheLock = app.requestSingleInstanceLock();
 let mainWindow = null;
 let tray = null;
 let serverProcess = null;
+let embeddedServerMode = null;
 let embeddedServerUrl = null;
 let serverStartPromise = null;
 app.isQuitting = false;
@@ -139,7 +150,37 @@ function getFreePort() {
   });
 }
 
-function waitForServer(url, timeoutMs = 25000, checkExit = null) {
+function writeSmokeReport(payload) {
+  if (process.env.PA_SMOKE_REPORT_PATH) {
+    try {
+      fs.mkdirSync(path.dirname(process.env.PA_SMOKE_REPORT_PATH), { recursive: true });
+      fs.writeFileSync(process.env.PA_SMOKE_REPORT_PATH, JSON.stringify(payload, null, 2), 'utf8');
+    } catch (reportErr) {
+      console.error('[smoke-test] Failed to write smoke report:', reportErr);
+    }
+  }
+}
+
+function httpGetJsonStatus(url) {
+  return new Promise((resolve, reject) => {
+    const req = http.get(url, (res) => {
+      let data = '';
+      res.on('data', (chunk) => {
+        data += chunk;
+      });
+      res.on('end', () => {
+        resolve({ statusCode: res.statusCode || 0, body: data });
+      });
+    });
+    req.on('error', (err) => reject(err));
+    req.setTimeout(8000, () => {
+      req.destroy();
+      reject(new Error(`Timeout fetching ${url}`));
+    });
+  });
+}
+
+function waitForServer(url, timeoutMs = 30000, checkExit = null) {
   const startTime = Date.now();
   return new Promise((resolve, reject) => {
     function ping() {
@@ -160,7 +201,7 @@ function waitForServer(url, timeoutMs = 25000, checkExit = null) {
         scheduleRetry();
       });
 
-      req.setTimeout(1000, () => {
+      req.setTimeout(8000, () => {
         req.destroy();
         scheduleRetry();
       });
@@ -186,13 +227,10 @@ async function startEmbeddedServer(userDataPath) {
     return embeddedServerUrl;
   }
 
-  const port = await getFreePort();
   const standaloneDir = path.join(process.resourcesPath, 'standalone');
   const serverScript = path.join(standaloneDir, 'server.js');
   const serverModules = path.join(standaloneDir, 'server_modules');
   const actualNodeModules = path.join(standaloneDir, 'node_modules');
-
-  console.log(`[main] Launching standalone server from: ${serverScript} on port ${port}`);
 
   if (!fs.existsSync(serverScript)) {
     throw new Error(`Standalone server script not found at ${serverScript}`);
@@ -216,78 +254,128 @@ async function startEmbeddedServer(userDataPath) {
   ].filter(Boolean).join(path.delimiter);
 
   let serverError = null;
+  let stdoutBuffer = '';
   let stderrBuffer = '';
   let isServerReady = false;
 
-  if (utilityProcess && typeof utilityProcess.fork === 'function') {
-    console.log('[main] Spawning standalone server using Electron utilityProcess');
-    serverProcess = utilityProcess.fork(serverScript, [], {
-      cwd: standaloneDir,
-      env: {
-        ...process.env,
-        NODE_ENV: 'production',
-        HOSTNAME: '127.0.0.1',
-        PORT: String(port),
-        NODE_PATH: nodePathEntries,
-        DESKTOP_MODE: 'true',
-        NEXT_PUBLIC_DESKTOP_MODE: 'true',
-        LOCAL_DB_DIR: userDataPath,
-      },
-      stdio: 'pipe',
-      serviceName: 'standalone-server',
-    });
-  } else {
-    console.log('[main] Spawning standalone server using child_process.fork fallback');
-    serverProcess = fork(serverScript, [], {
-      cwd: standaloneDir,
-      execPath: process.execPath,
-      env: {
-        ...process.env,
-        ELECTRON_RUN_AS_NODE: '1',
-        NODE_ENV: 'production',
-        HOSTNAME: '127.0.0.1',
-        PORT: String(port),
-        NODE_PATH: nodePathEntries,
-        DESKTOP_MODE: 'true',
-        NEXT_PUBLIC_DESKTOP_MODE: 'true',
-        LOCAL_DB_DIR: userDataPath,
-      },
-      stdio: 'pipe',
-    });
-  }
+  // Tier 1: Electron utilityProcess / child_process fork
+  try {
+    const port = await getFreePort();
+    console.log(`[main] Launching standalone server from: ${serverScript} on port ${port}`);
 
-  if (serverProcess.stdout) {
-    serverProcess.stdout.on('data', (data) => {
-      console.log(`[standalone-server] ${data.toString().trim()}`);
-    });
-  }
-  if (serverProcess.stderr) {
-    serverProcess.stderr.on('data', (data) => {
-      const text = data.toString();
-      stderrBuffer += text;
-      console.error(`[standalone-server:err] ${text.trim()}`);
-    });
-  }
-  serverProcess.on('error', (err) => {
-    console.error('[standalone-server:process-err]', err);
-    serverError = new Error(`Standalone server failed to spawn: ${err?.message || err}`);
-  });
-  serverProcess.on('exit', (code, signal) => {
-    console.log(`[standalone-server] Exited with code ${code}, signal ${signal}`);
-    if (!isServerReady) {
-      const errDetails = stderrBuffer.trim() || `Process exited prematurely (code: ${code}, signal: ${signal})`;
-      serverError = new Error(`Standalone server stopped unexpectedly.\n\n${errDetails}`);
+    if (utilityProcess && typeof utilityProcess.fork === 'function') {
+      console.log('[main] Spawning standalone server using Electron utilityProcess');
+      serverProcess = utilityProcess.fork(serverScript, [], {
+        cwd: standaloneDir,
+        env: {
+          ...process.env,
+          NODE_ENV: 'production',
+          HOSTNAME: '127.0.0.1',
+          PORT: String(port),
+          NODE_PATH: nodePathEntries,
+          DESKTOP_MODE: 'true',
+          NEXT_PUBLIC_DESKTOP_MODE: 'true',
+          LOCAL_DB_DIR: userDataPath,
+        },
+        stdio: 'pipe',
+        serviceName: 'standalone-server',
+      });
+    } else {
+      console.log('[main] Spawning standalone server using child_process.fork fallback');
+      serverProcess = fork(serverScript, [], {
+        cwd: standaloneDir,
+        execPath: process.execPath,
+        env: {
+          ...process.env,
+          ELECTRON_RUN_AS_NODE: '1',
+          NODE_ENV: 'production',
+          HOSTNAME: '127.0.0.1',
+          PORT: String(port),
+          NODE_PATH: nodePathEntries,
+          DESKTOP_MODE: 'true',
+          NEXT_PUBLIC_DESKTOP_MODE: 'true',
+          LOCAL_DB_DIR: userDataPath,
+        },
+        stdio: 'pipe',
+      });
     }
-    serverProcess = null;
-    embeddedServerUrl = null;
-    serverStartPromise = null;
-  });
 
-  const targetUrl = `http://127.0.0.1:${port}`;
-  await waitForServer(targetUrl, 25000, () => serverError);
-  isServerReady = true;
-  embeddedServerUrl = targetUrl;
-  return targetUrl;
+    const spawnedProc = serverProcess;
+
+    if (spawnedProc.stdout) {
+      spawnedProc.stdout.on('data', (data) => {
+        const text = data.toString();
+        stdoutBuffer = (stdoutBuffer + text).slice(-4000);
+        console.log(`[standalone-server] ${text.trim()}`);
+      });
+    }
+    if (spawnedProc.stderr) {
+      spawnedProc.stderr.on('data', (data) => {
+        const text = data.toString();
+        stderrBuffer = (stderrBuffer + text).slice(-4000);
+        console.error(`[standalone-server:err] ${text.trim()}`);
+      });
+    }
+    spawnedProc.on('error', (err) => {
+      console.error('[standalone-server:process-err]', err);
+      serverError = new Error(`Standalone server failed to spawn: ${err?.message || err}`);
+    });
+    spawnedProc.on('exit', (code, signal) => {
+      console.log(`[standalone-server] Exited with code ${code}, signal ${signal}`);
+      if (!isServerReady) {
+        const errDetails = (stderrBuffer || stdoutBuffer).trim() || `Process exited prematurely (code: ${code}, signal: ${signal})`;
+        serverError = new Error(`Standalone server stopped unexpectedly.\n\n${errDetails}`);
+      }
+      if (serverProcess === spawnedProc) {
+        serverProcess = null;
+        embeddedServerUrl = null;
+        serverStartPromise = null;
+      }
+    });
+
+    const targetUrl = `http://127.0.0.1:${port}`;
+    const healthUrl = `http://127.0.0.1:${port}/api/auth/local-session`;
+    await waitForServer(healthUrl, 30000, () => serverError);
+    isServerReady = true;
+    embeddedServerMode = 'utilityProcess';
+    embeddedServerUrl = targetUrl;
+    return embeddedServerUrl;
+  } catch (tier1Err) {
+    console.warn('[main] Tier-1 utilityProcess engine failed, falling back to Tier-2 in-process server:', tier1Err?.message || tier1Err);
+    const staleProc = serverProcess;
+    serverProcess = null;
+    isServerReady = true;
+    if (staleProc) {
+      try {
+        staleProc.kill();
+      } catch {}
+    }
+
+    const inProcPort = await getFreePort();
+    try {
+      process.env.NODE_ENV = 'production';
+      process.env.HOSTNAME = '127.0.0.1';
+      process.env.PORT = String(inProcPort);
+      process.env.DESKTOP_MODE = 'true';
+      process.env.NEXT_PUBLIC_DESKTOP_MODE = 'true';
+      process.env.LOCAL_DB_DIR = userDataPath;
+      process.env.NODE_PATH = nodePathEntries;
+      require('module').Module._initPaths();
+      process.chdir(standaloneDir);
+      require(serverScript);
+
+      const inProcHealthUrl = `http://127.0.0.1:${inProcPort}/api/auth/local-session`;
+      await waitForServer(inProcHealthUrl, 30000);
+      embeddedServerMode = 'inProcess';
+      embeddedServerUrl = `http://127.0.0.1:${inProcPort}`;
+      console.log(`[main] Tier-2 in-process server ready at ${embeddedServerUrl}`);
+      return embeddedServerUrl;
+    } catch (tier2Err) {
+      throw new Error(
+        `Tier-1 failed (${tier1Err?.message || tier1Err}); Tier-2 failed (${tier2Err?.message || tier2Err})`
+      );
+    }
+  }
 }
 
 function getOrStartEmbeddedServer(userDataPath) {
@@ -358,15 +446,75 @@ function createWindow() {
 
     const dbDir = process.env.LOCAL_DB_DIR || app.getPath('userData');
     getOrStartEmbeddedServer(dbDir)
-      .then((serverUrl) => {
+      .then(async (serverUrl) => {
         if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.loadURL(serverUrl, {
+          await mainWindow.loadURL(serverUrl, {
             extraHeaders: 'x-desktop-mode: true\n',
           });
+
+          if (isSmokeTest) {
+            await new Promise((r) => setTimeout(r, 1500));
+            const domInfo = await mainWindow.webContents.executeJavaScript(
+              `({ url: window.location.href, title: document.title || '', bodyText: document.body ? document.body.innerText.slice(0, 600) : '' })`
+            );
+
+            const authCheck = await httpGetJsonStatus(`${serverUrl}/api/auth/local-session`).catch((err) => ({
+              statusCode: 500,
+              body: err?.message || String(err),
+            }));
+
+            if (domInfo.bodyText.includes('Unable to Start Local Engine') || authCheck.statusCode !== 200) {
+              throw new Error(
+                `Smoke verification failed. Auth status: ${authCheck.statusCode}. DOM Title: "${domInfo.title}". Snippet: "${domInfo.bodyText.slice(0, 160)}"`
+              );
+            }
+
+            let pngBuffer = null;
+            if (process.env.PA_SMOKE_SCREENSHOT_PATH) {
+              const image = await mainWindow.webContents.capturePage();
+              pngBuffer = image.toPNG();
+              fs.mkdirSync(path.dirname(process.env.PA_SMOKE_SCREENSHOT_PATH), { recursive: true });
+              fs.writeFileSync(process.env.PA_SMOKE_SCREENSHOT_PATH, pngBuffer);
+            }
+
+            writeSmokeReport({
+              success: true,
+              bootMs: Date.now() - smokeStartTime,
+              mode: embeddedServerMode,
+              serverUrl,
+              finalUrl: domInfo.url,
+              title: domInfo.title,
+              authStatusCode: authCheck.statusCode,
+              bodySnippet: domInfo.bodyText.slice(0, 240),
+              screenshotBytes: pngBuffer ? pngBuffer.length : 0,
+              platform: process.platform,
+              arch: process.arch,
+              electron: process.versions.electron,
+              node: process.versions.node,
+            });
+
+            console.log('[smoke-test] PASSED');
+            app.isQuitting = true;
+            stopEmbeddedServer();
+            app.exit(0);
+          }
         }
       })
       .catch((err) => {
         console.error('[main] Failed to start standalone server:', err);
+        if (isSmokeTest) {
+          writeSmokeReport({
+            success: false,
+            error: err?.message || String(err),
+            bootMs: Date.now() - smokeStartTime,
+            platform: process.platform,
+            arch: process.arch,
+          });
+          console.error('[smoke-test] FAILED:', err);
+          stopEmbeddedServer();
+          app.exit(1);
+          return;
+        }
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(getErrorHtml(err.message)));
         }
@@ -835,26 +983,46 @@ if (!gotTheLock) {
   });
 
   app.whenReady().then(() => {
+    if (isSmokeTest) {
+      setTimeout(() => {
+        console.error('[smoke-test] FAIL-SAFE WATCHDOG TRIGGERED: smoke test timed out after 55s');
+        writeSmokeReport({
+          success: false,
+          error: 'Fail-safe watchdog triggered after 55000ms',
+          bootMs: Date.now() - smokeStartTime,
+          platform: process.platform,
+          arch: process.arch,
+        });
+        app.exit(1);
+      }, 55000).unref();
+    }
+
     if (!process.env.LOCAL_DB_DIR) {
       process.env.LOCAL_DB_DIR = app.getPath('userData');
     }
     createWindow();
-    createTray();
+    try {
+      createTray();
+    } catch (err) {
+      console.warn('[tray] Tray init warning:', err?.message || err);
+    }
     configureAutoUpdater();
 
-    setTimeout(() => {
-      try {
-        const cfg = readUpdateConfig();
-        if (cfg.autoCheck !== false) {
-          console.log('[updater] Automatically checking for updates on application launch...');
-          autoUpdater.checkForUpdates().catch((err) => {
-            console.warn('[updater] Startup update check failed:', err?.message || err);
-          });
+    if (!isSmokeTest) {
+      setTimeout(() => {
+        try {
+          const cfg = readUpdateConfig();
+          if (cfg.autoCheck !== false) {
+            console.log('[updater] Automatically checking for updates on application launch...');
+            autoUpdater.checkForUpdates().catch((err) => {
+              console.warn('[updater] Startup update check failed:', err?.message || err);
+            });
+          }
+        } catch (err) {
+          console.warn('[updater] Startup update check exception:', err?.message || err);
         }
-      } catch (err) {
-        console.warn('[updater] Startup update check exception:', err?.message || err);
-      }
-    }, 3500);
+      }, 3500);
+    }
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {

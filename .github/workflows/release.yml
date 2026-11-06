@@ -58,6 +58,66 @@ jobs:
           cp dist-desktop/Personal-Assistant-*-arm64.zip dist-desktop/Personal-Assistant-arm64.zip || true
           cp dist-desktop/Personal-Assistant-*-x64.zip dist-desktop/Personal-Assistant-x64.zip || true
 
+      - name: Cloud macOS Simulator (Verify Signing, Mount DMG & Boot GUI)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "=== 1. Verifying uniform ad-hoc code signatures ==="
+          codesign --verify --deep --strict --verbose=2 "dist-desktop/mac-arm64/Personal Assistant.app"
+          if [ -d "dist-desktop/mac/Personal Assistant.app" ]; then
+            codesign --verify --deep --strict --verbose=2 "dist-desktop/mac/Personal Assistant.app"
+          fi
+          codesign -d --entitlements - "dist-desktop/mac-arm64/Personal Assistant.app" || true
+
+          echo "=== 2. Mounting Personal-Assistant-arm64.dmg read-only & installing via ditto ==="
+          rm -rf /tmp/pa-dmg-mount /tmp/mac-sim-apps /tmp/pa-sim-userdata dist-desktop/mac-simulator
+          mkdir -p /tmp/pa-dmg-mount /tmp/mac-sim-apps /tmp/pa-sim-userdata dist-desktop/mac-simulator
+          hdiutil attach dist-desktop/Personal-Assistant-arm64.dmg -nobrowse -readonly -mountpoint /tmp/pa-dmg-mount
+          ditto "/tmp/pa-dmg-mount/Personal Assistant.app" "/tmp/mac-sim-apps/Personal Assistant.app"
+          hdiutil detach /tmp/pa-dmg-mount || hdiutil detach -force /tmp/pa-dmg-mount || true
+
+          echo "=== 3. Re-verifying signature after DMG copy ==="
+          codesign --verify --deep --strict "/tmp/mac-sim-apps/Personal Assistant.app"
+
+          echo "=== 4. Booting real Personal Assistant.app on Cloud macOS Simulator ==="
+          set +e
+          PA_SMOKE_TEST=1 \
+          LOCAL_DB_DIR=/tmp/pa-sim-userdata \
+          PA_SMOKE_SCREENSHOT_PATH="$PWD/dist-desktop/mac-simulator/mac-simulator-screenshot.png" \
+          PA_SMOKE_REPORT_PATH="$PWD/dist-desktop/mac-simulator/mac-simulator-report.json" \
+          "/tmp/mac-sim-apps/Personal Assistant.app/Contents/MacOS/Personal Assistant" \
+          > dist-desktop/mac-simulator/simulator-stdout.log 2>&1
+          SIM_EXIT=$?
+          set -e
+
+          cat dist-desktop/mac-simulator/simulator-stdout.log
+
+          if [ $SIM_EXIT -ne 0 ]; then
+            echo "::error::Cloud macOS Simulator failed with exit code $SIM_EXIT"
+            ls -la ~/Library/Logs/DiagnosticReports/ || true
+            for crash in ~/Library/Logs/DiagnosticReports/*Personal* ~/Library/Logs/DiagnosticReports/*Electron*; do
+              if [ -f "$crash" ]; then
+                echo "=== Crash Report: $crash ==="
+                head -n 120 "$crash"
+              fi
+            done
+            exit $SIM_EXIT
+          fi
+
+          echo "=== 5. Validating Cloud macOS Simulator Report & Screenshot ==="
+          test -f dist-desktop/mac-simulator/mac-simulator-report.json
+          cat dist-desktop/mac-simulator/mac-simulator-report.json
+          ls -lh dist-desktop/mac-simulator/mac-simulator-screenshot.png
+
+      - name: Upload Cloud macOS Simulator Proof
+        if: always() && runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-cloud-simulator-proof
+          path: dist-desktop/mac-simulator/*
+          if-no-files-found: warn
+
       - name: Package Desktop App (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
